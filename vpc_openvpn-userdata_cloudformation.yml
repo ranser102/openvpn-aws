@@ -1,0 +1,450 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AWS CloudFormation that create VPC and OpenVPN instance based on LNS
+  Cloud AMI.
+Outputs:
+  AZ:
+    Description: Availability Zone of the newly created EC2 instance
+    Value:
+      Fn::GetAtt:
+      - EC2Instance
+      - AvailabilityZone
+  InstanceId:
+    Description: InstanceId of the newly created EC2 instance
+    Value:
+      Ref: EC2Instance
+  PublicDNS:
+    Description: Public DNSName of the newly created EC2 instance
+    Value:
+      Fn::GetAtt:
+      - EC2Instance
+      - PublicDnsName
+  PublicIP:
+    Description: Public IP address of the newly created EC2 instance
+    Value:
+      Fn::GetAtt:
+      - EC2Instance
+      - PublicIp
+Parameters:
+  InstanceType:
+    AllowedValues:
+    - t1.micro
+    - t2.nano
+    - t2.micro
+    - t2.small
+    - t2.medium
+    - t2.large
+    - m1.small
+    - m1.medium
+    - m1.large
+    - m1.xlarge
+    - m2.xlarge
+    - m2.2xlarge
+    - m2.4xlarge
+    - m3.medium
+    - m3.large
+    - m3.xlarge
+    - m3.2xlarge
+    - m4.large
+    - m4.xlarge
+    - m4.2xlarge
+    - m4.4xlarge
+    - m4.10xlarge
+    ConstraintDescription: must be a valid EC2 instance type.
+    Default: t2.micro
+    Description: OpenVPN EC2 instance type
+    Type: String
+  KeyName:
+    ConstraintDescription: must be the name of an existing EC2 KeyPair.
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instance
+    Type: AWS::EC2::KeyPair::KeyName
+  SSHLocation:
+    AllowedPattern: (\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+    Default: 0.0.0.0/0
+    Description: The IP address range that can be used to SSH to the EC2 instances
+    MaxLength: '18'
+    MinLength: '9'
+    Type: String
+Resources:
+  AttachGateway:
+    Properties:
+      InternetGatewayId:
+        Ref: InternetGateway
+      VpcId:
+        Ref: VPC
+    Type: AWS::EC2::VPCGatewayAttachment
+  EC2Instance:
+    Properties:
+      ImageId: ami-bbe8c9c0
+      InstanceType:
+        Ref: InstanceType
+      KeyName:
+        Ref: KeyName
+      NetworkInterfaces:
+      - AssociatePublicIpAddress: 'true'
+        DeleteOnTermination: 'true'
+        DeviceIndex: '0'
+        GroupSet:
+        - Ref: InstanceSecurityGroup
+        SubnetId:
+          Ref: Subnet
+      UserData:
+        Fn::Base64:
+          Fn::Join:
+          - ''
+          - - '#!/bin/bash -xv
+
+              '
+            - '## Init openvpn config file with public IP:
+
+              '
+            - 'inst_pub_ip=`curl -X GET http://169.254.169.254/latest/meta-data/public-ipv4
+              2>/dev/null`
+
+              '
+            - 'sudo cat /client-configs/base.conf.template | sed  ''s/{INST_PUBLIC_IP}/''${inst_pub_ip}''/g''
+              > /client-configs/base.conf.ready
+
+              '
+            - '## Create CA certificate for the openvpn server:
+
+              '
+            - 'cd /etc/openvpn/easy-rsa/
+
+              '
+            - 'sudo /etc/openvpn/easy-rsa/clean-all
+
+              '
+            - 'sudo /etc/openvpn/easy-rsa/build-ca_batch
+
+              '
+            - 'sudo /etc/openvpn/easy-rsa/build-key-server_batch LNSCloudServer
+
+              '
+            - 'sudo cp /etc/openvpn/easy-rsa/keys/ca.crt /etc/openvpn/
+
+              '
+            - 'sudo cp /etc/openvpn/easy-rsa/keys/LNSCloudServer.crt /etc/openvpn/
+
+              '
+            - 'sudo cp /etc/openvpn/easy-rsa/keys/LNSCloudServer.key /etc/openvpn/
+
+              '
+            - '## Create client users + certificate + openvpn client config file.
+
+              '
+            - "## You can create as many users as you want and set thier password\
+              \ as you want. \n"
+            - "## In this script we will create three users: client01 , client02 and\
+              \ openvpnadm \n"
+            - 'cd /client-configs/
+
+              '
+            - '## client01 creation (password: "ClientPassword01") :
+
+              '
+            - 'sudo deluser client01
+
+              '
+            - 'sudo /client-configs/gen_user.sh client01 ClientPassword01
+
+              '
+            - 'sudo /client-configs/gen_cert_client.sh client01
+
+              '
+            - 'sudo /client-configs/make_config.sh client01
+
+              '
+            - 'sudo cp /client-configs/files/client01.ovpn /var/www/html/openvpn/
+
+              '
+            - '## client02 creation (password: "ClientPassword02") :
+
+              '
+            - 'sudo deluser client02
+
+              '
+            - 'sudo /client-configs/gen_user.sh client02 ClientPassword02
+
+              '
+            - 'sudo /client-configs/gen_cert_client.sh client02
+
+              '
+            - 'sudo /client-configs/make_config.sh client02
+
+              '
+            - 'sudo cp /client-configs/files/client02.ovpn /var/www/html/openvpn/
+
+              '
+            - '## openvpnadm creation (password: "OpenVPNAdm") :
+
+              '
+            - "sudo deluser openvpnadm \n"
+            - "sudo /client-configs/gen_user.sh openvpnadm OpenVPNAdm \n"
+            - "sudo /client-configs/gen_cert_client.sh openvpnadm \n"
+            - 'sudo /client-configs/make_config.sh openvpnadm
+
+              '
+            - 'sudo cp /client-configs/files/openvpnadm.ovpn /var/www/html/openvpn/
+
+              '
+            - '## Startup openvpn server:
+
+              '
+            - 'sudo systemctl stop openvpn@server
+
+              '
+            - 'sleep 3
+
+              '
+            - 'sudo systemctl start openvpn@server
+
+              '
+            - 'sleep 3
+
+              '
+            - '## Startup Apache2 server:
+
+              '
+            - 'sudo systemctl stop apache2
+
+              '
+            - 'sleep 3
+
+              '
+            - 'sudo systemctl start apache2
+
+              '
+            - 'sleep 3
+
+              '
+            - '## System is ready:
+
+              '
+            - 'echo "openvpn client config files can be download from here: https://${inst_pub_ip}/download_openvpn_config_file.html
+              "
+
+              '
+            - 'echo "Example how to run openvpn client on ubuntu desktop: sudo openvpn
+              --config client01.ovpn"
+
+              '
+            - '## End of Init script
+
+              '
+    Type: AWS::EC2::Instance
+  InboundAllUDPNetworkAclEntry:
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: 'false'
+      NetworkAclId:
+        Ref: NetworkAcl
+      PortRange:
+        From: '0'
+        To: '65535'
+      Protocol: '17'
+      RuleAction: allow
+      RuleNumber: '500'
+    Type: AWS::EC2::NetworkAclEntry
+  InboundEphemeralPortsNetworkAclEntry:
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: 'false'
+      NetworkAclId:
+        Ref: NetworkAcl
+      PortRange:
+        From: '1024'
+        To: '65535'
+      Protocol: '6'
+      RuleAction: allow
+      RuleNumber: '100'
+    Type: AWS::EC2::NetworkAclEntry
+  InboundHTTPNetworkAclEntry:
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: 'false'
+      NetworkAclId:
+        Ref: NetworkAcl
+      PortRange:
+        From: '80'
+        To: '80'
+      Protocol: '6'
+      RuleAction: allow
+      RuleNumber: '300'
+    Type: AWS::EC2::NetworkAclEntry
+  InboundHTTPSNetworkAclEntry:
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: 'false'
+      NetworkAclId:
+        Ref: NetworkAcl
+      PortRange:
+        From: '443'
+        To: '443'
+      Protocol: '6'
+      RuleAction: allow
+      RuleNumber: '200'
+    Type: AWS::EC2::NetworkAclEntry
+  InboundSSHNetworkAclEntry:
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: 'false'
+      NetworkAclId:
+        Ref: NetworkAcl
+      PortRange:
+        From: '22'
+        To: '22'
+      Protocol: '6'
+      RuleAction: allow
+      RuleNumber: '400'
+    Type: AWS::EC2::NetworkAclEntry
+  InstanceSecurityGroup:
+    Properties:
+      GroupDescription: SSH , Https and udp 1194
+      SecurityGroupIngress:
+      - CidrIp:
+          Ref: SSHLocation
+        FromPort: '22'
+        IpProtocol: tcp
+        ToPort: '22'
+      - CidrIp: 0.0.0.0/0
+        FromPort: '1194'
+        IpProtocol: udp
+        ToPort: '1194'
+      - CidrIp: 0.0.0.0/0
+        FromPort: '443'
+        IpProtocol: tcp
+        ToPort: '443'
+      VpcId:
+        Ref: VPC
+    Type: AWS::EC2::SecurityGroup
+  InternetGateway:
+    Properties:
+      Tags:
+      - Key: Name
+        Value: openvpn_IGW
+    Type: AWS::EC2::InternetGateway
+  NetworkAcl:
+    Properties:
+      Tags:
+      - Key: Name
+        Value: openvpn_NACL
+      VpcId:
+        Ref: VPC
+    Type: AWS::EC2::NetworkAcl
+  OutBoundAllUDPNetworkAclEntry:
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: 'true'
+      NetworkAclId:
+        Ref: NetworkAcl
+      PortRange:
+        From: '0'
+        To: '65535'
+      Protocol: '17'
+      RuleAction: allow
+      RuleNumber: '500'
+    Type: AWS::EC2::NetworkAclEntry
+  OutBoundEphemeralPortsNetworkAclEntry:
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: 'true'
+      NetworkAclId:
+        Ref: NetworkAcl
+      PortRange:
+        From: '1024'
+        To: '65535'
+      Protocol: '6'
+      RuleAction: allow
+      RuleNumber: '100'
+    Type: AWS::EC2::NetworkAclEntry
+  OutBoundHTTPNetworkAclEntry:
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: 'true'
+      NetworkAclId:
+        Ref: NetworkAcl
+      PortRange:
+        From: '80'
+        To: '80'
+      Protocol: '6'
+      RuleAction: allow
+      RuleNumber: '300'
+    Type: AWS::EC2::NetworkAclEntry
+  OutBoundHTTPSNetworkAclEntry:
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: 'true'
+      NetworkAclId:
+        Ref: NetworkAcl
+      PortRange:
+        From: '443'
+        To: '443'
+      Protocol: '6'
+      RuleAction: allow
+      RuleNumber: '200'
+    Type: AWS::EC2::NetworkAclEntry
+  OutBoundSSHNetworkAclEntry:
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: 'true'
+      NetworkAclId:
+        Ref: NetworkAcl
+      PortRange:
+        From: '22'
+        To: '22'
+      Protocol: '6'
+      RuleAction: allow
+      RuleNumber: '400'
+    Type: AWS::EC2::NetworkAclEntry
+  Route:
+    DependsOn: AttachGateway
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId:
+        Ref: InternetGateway
+      RouteTableId:
+        Ref: RouteTable
+    Type: AWS::EC2::Route
+  RouteTable:
+    Properties:
+      Tags:
+      - Key: Name
+        Value: openvpn_RT
+      VpcId:
+        Ref: VPC
+    Type: AWS::EC2::RouteTable
+  Subnet:
+    Properties:
+      CidrBlock: 10.0.8.0/24
+      Tags:
+      - Key: Name
+        Value: openvpn_subnet_10.0.8.0/24
+      VpcId:
+        Ref: VPC
+    Type: AWS::EC2::Subnet
+  SubnetNetworkAclAssociation:
+    Properties:
+      NetworkAclId:
+        Ref: NetworkAcl
+      SubnetId:
+        Ref: Subnet
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+  SubnetRouteTableAssociation:
+    Properties:
+      RouteTableId:
+        Ref: RouteTable
+      SubnetId:
+        Ref: Subnet
+    Type: AWS::EC2::SubnetRouteTableAssociation
+  VPC:
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      Tags:
+      - Key: Application
+        Value:
+          Ref: AWS::StackId
+      - Key: Name
+        Value: openvpn_VPC
+    Type: AWS::EC2::VPC
+
